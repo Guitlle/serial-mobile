@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="stylesheet" href="vendor/bulma.css">
+    <script src="vendor/bugout.min.js"></script>
+    <script src="vendor/qrcode.min.js"></script>
+    <style>
+    html {
+        height: 100%;
+        overflow: hidden;
+    }
+    body { 
+        background-color: #333; 
+        color: white;
+        font-size: 15px;
+        height: 100%;
+        overflow: hidden;
+    }
+    pre { color: #666; white-space: pre-wrap; word-wrap: break-word; text-align: left; }
+    .container {
+    }
+    .vcontainer {
+        background: #666;
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        left: 0;
+        width: 100%;
+        display: flex;
+        flex-direction: column;
+    }
+    .vsection {
+        margin: 0.75rem;
+        flex-grow: 1;
+        height: 100%;
+        display: flex;
+        flex-direction: column;
+        /* for Firefox */
+        min-height: 0;
+    }
+    .vcontent {
+    }
+    .scrollable-vcontent {
+        flex: 1 1 auto;
+        overflow: auto;
+        height: 0px;
+        /* for Firefox */
+        min-height: 0;
+    }
+    #qrcode {
+        padding: 20px;
+        display: inline-block;
+        background: white;
+    }
+    #control_container {
+    }
+    .hidden {
+        display: none;
+    }
+    
+    .flexfix {
+        flex: 0 1 auto;
+        height: auto;
+    }
+    </style>
+</head>
+<body>
+<div class="wrapper">
+    <div class="vcontainer has-text-centered" id="connect_container">
+        <div class="vsection">
+            <div class="columns flexfix is-centered">
+                <div class="column is-half has-text-centered">
+                    <div id="qrcode"></div>
+                </div>
+            </div>
+            <div class="columns flexfix is-centered">
+                <div class="column has-text-centered">
+                    <button class="button" onclick="initLed()">Init Led</button>
+                    <button class="button" onclick="toggleLed()">Toggle Led</button>
+                    <button class="button" onclick="initServo()">Init Servo</button>
+                    <button class="button" onclick="toggleServo()">Toggle Servo</button>
+                </div>
+            </div>
+            <div class="scrollable-vcontent columns">
+                <pre id="log" class="column"><h4>LOG</h4></pre>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+// simple logging function
+var logElement = document.getElementById("log");
+function log() {
+    var args = Array.prototype.slice.call(arguments);
+    console.log.apply(null, args);
+    args = args.map(function(a) { if (typeof(a) == "string") return a; else return JSON.stringify(a); });
+    logElement.textContent += args.join(" ") + "\n";
+    logElement.scroll(0, logElement.scrollHeight) 
+}
+
+var AudioContext = window.AudioContext || window.webkitAudioContext;
+var sContext = new AudioContext();
+
+// some devices output an inverted waveform, some don't
+var audio_serial_invert = false;
+
+function audio_serial_create(data, baud_) {
+  var sampleRate = 44100;
+  var header = sampleRate/10; // 1 sec to charge/discharge the cap
+  var baud = baud_;
+  var samplesPerByte = parseInt(11*sampleRate/baud);
+  var bufferSize = samplesPerByte*data.length + header*2;
+  var buffer = sContext.createBuffer(1, bufferSize, sampleRate);
+  var b = buffer.getChannelData(0);
+
+  for (var i=0;i<header;i++) b[i]= 1;
+
+  var offset = header;
+
+  data.split("").forEach(function(c) {
+    var byte = c.charCodeAt(0);
+    if (byte>=0 && byte<=255) {    
+      for (var i=0;i<samplesPerByte;i++) {
+        var bit = Math.round(i*baud/sampleRate);
+        var value = 1;
+        if (bit==0) value=0; // start bit
+        else if (bit==9 || bit==10) value=1; // stop bits
+        else value = (byte&(1<<(bit-1))) ? 1 : 0; // data
+        b[offset++] = value*2-1; 
+      }
+    } else {
+      // just insert a pause
+      for (var i=0;i<samplesPerByte;i++) 
+        b[offset++] = 1; 
+    }
+  });
+
+  for (var i=0;i<header;i++) b[offset+i]=1-(i / header);
+
+  if (audio_serial_invert)
+  for (var i=0;i<bufferSize;i++) b[i] = 1-b[i];
+
+  return buffer;
+}
+/** Send the given string of data out over audio.
+    This adds a 1/10 second preamble/postable to give the
+    capacitor time to charge (so we get a full 2V swing
+    on the output.
+
+   If you send characters outside the range 0-255,
+   they will be interpreted as a break (so not transmitted).
+*/
+function audio_serial_write(buffer, callback) {
+  var source = sContext.createBufferSource();
+  source.buffer = buffer;
+  source.connect(sContext.destination);
+  source.start();
+
+  if (callback)
+    window.setTimeout(callback, 1000*bufferSize/sampleRate);
+  return buffer;
+}
+
+function audio_serial_send(data, baud_, callback) {
+    if (serialCache[data] === undefined) {
+        serialCache[data] = audio_serial_create(data, baud_);
+    }
+    audio_serial_write(serialCache[data], callback);
+}
+
+
+var led = true, servo = true,
+    serialCache = {};
+
+function initLed() {
+    audio_serial_send("O021_", 9600);
+}
+function toggleLed() {
+    led = ! led;
+    audio_serial_send(led ? "o021_" : "o020_", 9600);
+}
+function initServo() {
+    audio_serial_send("n600010n60FE26n600080n600104_", 9600);
+}
+function toggleServo() {
+    servo = ! servo;
+    audio_serial_send("n604200n604300_"  + (servo ? "n604400n604501_" : "n604400n604507_"), 9600);
+}
+
+initServo();
+initLed();
+
+
+
+log("");
+// Bugout demo server API code
+// Edit this to change the live API this server is running:
+var b = new Bugout({seed: localStorage["bugout-demo-seed"]});
+// save the seed for next time
+localStorage["bugout-demo-seed"] = b.seed;
+// log this server's address
+log("address:", b.address());
+new QRCode(document.getElementById("qrcode"), { 
+        text: b.address(),
+        width: 128,
+        height: 128
+    });
+log("announcing...");
+// log when network connectivity changes
+b.on("connections", function(c) {
+    log("connections:", c);
+    if (c == 0) {
+        log("ready");
+    }
+});
+// log when a client sends a message
+b.on("message", function(address, msg) { log("message:", address, msg); });
+// log when a client makes an rpc call
+b.on("rpc", function(address, call, args) { log("rpc:", address, call, args); });
+// log when we see a new client address
+b.on("seen", function(address) { log("seen:", address); });
+// respond to ping calls by sending back "pong"
+b.register("ping", function(pk, args, cb) {
+  args["pong"] = true;
+  cb(args);
+}, "Respond to ping with 'pong'.");
+
+b.register("toggleServo", function(pk, args, cb) {
+  toggleServo();
+  cb({"status": "done"});
+}, "Toggle Servo.");
+
+b.register("toggleLed", function(pk, args, cb) {
+  toggleLed();
+  cb({"status": "done"});
+}, "Toggle LED.");
+
+</script>
+
+</body>
+</html>

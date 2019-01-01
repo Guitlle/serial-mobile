@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="stylesheet" href="vendor/bulma.css">
+    <script src="vendor/bugout.min.js"></script>
+    <script src="vendor/jsQR.js"></script>
+    <style>
+    body { 
+        background-color: #333; 
+        color: white;
+        font-size: 15px;
+    }
+    pre { color: #666; white-space: pre-wrap; word-wrap: break-word; text-align: left; }
+    .container {
+    }
+    .vcontainer {
+        background: #666;
+        position: absolute;
+        top: 0;
+        bottom: 0;
+        left: 0;
+        width: 100%;
+        display: flex;
+        flex-direction: column;
+        height: 100%;
+    }
+    .vsection {
+        margin: 0.75rem;
+        flex-grow: 1;
+        display: flex;
+        flex-direction: column;
+        /* for Firefox */
+        min-height: 0;
+    }
+    .vcontent {
+    }
+    .scrollable-vcontent {
+        flex: 1 1 auto;
+        overflow: auto;
+        
+        /* for Firefox */
+        min-height: 0;
+        height: 0px;
+    }
+    #connect_container {
+    }
+    #control_container {
+    }
+    .hidden {
+        display: none;
+    }
+    .flexfix {
+        flex: 0 1 auto;
+    }
+    </style>
+</head>
+<body>
+<div class="wrapper">
+    <div class="hidden vcontainer has-text-centered	" id="connect_container">
+        <div class="vsection">
+            <div class="columns is-centered">
+                <div class="column has-text-centered">
+                    <canvas id="canvas" hidden></canvas>
+                    <div id="output" hidden>
+                        <div id="outputMessage">No QR code detected.</div>
+                        <div hidden><b>Data:</b> <span id="outputData"></span></div>
+                    </div>
+                </div>
+            </div>
+            <div class="scrollable-vcontent">
+                <h1>Scanning server QR code</h1>
+                <div id="loadingMessage">Unable to access video stream (please make sure you have a webcam enabled)</div>
+                <button onclick="ServerConnector.close();">Close</button>
+            </div>
+        </div>
+    </div>
+    <div class="vcontainer" id="control_container">
+        <div class="vsection">
+            <div class="columns flexfix is-centered">
+                <div class="column has-text-centered is-one-third">
+                    <button class="button" onclick="connectClick();">Connect</button>
+                    <button class="button" onclick="sendPing();">Ping</button>
+                    <button class="button" onclick="toggleLed()">Toggle Led</button>
+                    <button class="button" onclick="toggleServo()">Toggle Servo</button>
+                </div>
+            </div>
+            <div class="columns flexfix is-centered">
+                <div class="column is-one-third">
+                    <div class="field has-addons">
+                        <div class="control" style="width:90%;">
+                            <input id="server_key" class="input" type="text" placeholder="Enter Server Address">
+                        </div>
+                        <div class="control">
+                            <a class="button is-info"  onclick="login(document.getElementById('server_key').value)">
+                            &gt;&gt;
+                            </a>
+                        </div>
+                    </div>
+                </div>
+            </div>
+           
+            <div class="scrollable-vcontent columns">
+                <pre id="log" class="column"><h4>LOG</h4></pre>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+function connectClick() {
+    ServerConnector.start();
+}
+// log events as they happen
+var logElement = document.getElementById("log");
+function log(prefix) {
+    return function() {
+        var args = Array.prototype.slice.call(arguments);
+        var msg = prefix + " " +
+        args.map(function(a) {
+            return (a ? JSON.stringify(a) : "");
+        }).join(" ") + "\n";
+        document.getElementById("log").textContent += msg;
+        console.log(msg);
+        logElement.scroll(0, logElement.scrollHeight) 
+    }
+}
+log("")("");
+// connect to server using its public address
+var b = null; 
+function login(key) {
+    b = new Bugout(key);
+
+    log("My address is " + b.address())();
+    log("Connecting to the server...\n(this can take a minute)")();
+
+    // wait for connection to the server
+    b.on("server", function() {
+    // ok, we're connected
+    log("Connected to the server.")();
+    });
+    // also watch for other peers joining this server's swarm
+    b.on("seen", log("seen:"));
+}
+function toggleServo() {
+    b.rpc("toggleServo", {}, log("response:"));
+}
+function toggleLed() {
+    b.rpc("toggleLed", {}, log("response:"));    
+}
+function sendPing() {
+    b.rpc('ping', {'data': 'none'}, log("PING : "));
+}
+
+ServerConnector = new  (function () {
+        var that = this;
+        var controlContainer = document.getElementById("control_container");
+        var container = document.getElementById("connect_container");
+        var video = document.createElement("video");
+        var localStream = null;
+        var canvasElement = document.getElementById("canvas");
+        var canvas = canvasElement.getContext("2d");
+        var loadingMessage = document.getElementById("loadingMessage");
+        var outputContainer = document.getElementById("output");
+        var outputMessage = document.getElementById("outputMessage");
+        var outputData = document.getElementById("outputData");
+        var skipFrames = 0;
+        
+        function drawLine(begin, end, color) {
+            canvas.beginPath();
+            canvas.moveTo(begin.x, begin.y);
+            canvas.lineTo(end.x, end.y);
+            canvas.lineWidth = 4;
+            canvas.strokeStyle = color;
+            canvas.stroke();
+        }
+        
+        this.start = function () {
+            controlContainer.classList.add("hidden");
+            container.classList.remove("hidden");
+            outputData.innerText = "";
+            outputMessage.innerText = "";
+            // Use facingMode: environment to attemt to get the front camera on phones
+            navigator.mediaDevices.getUserMedia({ video: true }).then(function(stream) {
+                localStream = stream;
+                video.srcObject = localStream;
+                video.setAttribute("playsinline", true); // required to tell iOS safari we don't want fullscreen
+                video.play();
+                requestAnimationFrame(tick);
+            });
+        };
+        
+        this.close = function () {
+            video.pause();
+            localStream.getTracks()[0].stop();
+            video.srcObject = null;
+            container.classList.add("hidden");
+            controlContainer.classList.remove("hidden");
+        };
+
+        function tick() {
+            loadingMessage.innerText = "Loading video...";
+            if (skipFrames > 0) {
+                skipFrames--;
+            } else if (video.readyState === video.HAVE_ENOUGH_DATA) {
+                loadingMessage.hidden = true;
+                canvasElement.hidden = false;
+                outputContainer.hidden = false;
+
+                canvasElement.height = video.videoHeight/2;
+                canvasElement.width = video.videoWidth/2;
+                canvas.drawImage(video, 0, 0, canvasElement.width, canvasElement.height);
+                var imageData = canvas.getImageData(0, 0, canvasElement.width, canvasElement.height);
+                var code = jsQR(imageData.data, imageData.width, imageData.height, {
+                        inversionAttempts: "dontInvert",
+                    });
+                if (code) {
+                    drawLine(code.location.topLeftCorner, code.location.topRightCorner, "#FF3B58");
+                    drawLine(code.location.topRightCorner, code.location.bottomRightCorner, "#FF3B58");
+                    drawLine(code.location.bottomRightCorner, code.location.bottomLeftCorner, "#FF3B58");
+                    drawLine(code.location.bottomLeftCorner, code.location.topLeftCorner, "#FF3B58");
+                    outputMessage.hidden = true;
+                    outputData.parentElement.hidden = false;
+                    outputData.innerText = code.data;
+                    that.confirmCode(code.data);
+                } else {
+                    outputMessage.hidden = false;
+                    outputData.parentElement.hidden = true;
+                }
+            }
+            requestAnimationFrame(tick);
+        }
+        
+        this.confirmCode = function (code) {
+            video.pause();
+            if (confirm("Connect to address " + code + " ? ")) {
+                that.close();
+                login(code);
+            }
+            else {
+                // the qr code image is stuck on memory, so we must skip frames
+                skipFrames = 20;
+                video.play();
+            }
+        }
+        return this;
+    })();
+</script>
+</body>
+</html>
